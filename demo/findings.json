@@ -1,0 +1,165 @@
+[
+  {
+    "verdict": "confirmed",
+    "fingerprint": "app.js:hardcoded-secret:rakuten-api-key",
+    "title": "Live-looking API secret hardcoded in source and exposed via a public endpoint",
+    "description": "A secret-shaped constant (RAKUTEN_API_SECRET) is committed directly in app.js and is also returned verbatim in the JSON response of a public endpoint, exposing it to any client and to anyone with repository access.",
+    "root_cause": "The secret is stored as a literal in source code instead of an environment variable or secret manager, and is additionally echoed back in an API response instead of being kept server-side only.",
+    "intended_behavior": "The application should read the API secret from a runtime environment variable or secret store, use it only in server-to-server calls, and never include it in any response sent to a client.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app.js",
+        "line": 9,
+        "scope": "module-level constant",
+        "description": "RAKUTEN_API_SECRET is defined as a plaintext string literal at module scope."
+      },
+      {
+        "kind": "propagation",
+        "file": "app.js",
+        "line": 24,
+        "scope": "app.get('/api/products/:id/rakuten-link')",
+        "description": "The constant is read inside a public route handler."
+      },
+      {
+        "kind": "sink",
+        "file": "app.js",
+        "line": 26,
+        "scope": "res.json(...)",
+        "description": "The secret value is included directly in the HTTP JSON response body sent to the client."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app.js",
+        "line": 9,
+        "description": "const RAKUTEN_API_SECRET = 'sk_live_51Hc9F3example_do_not_reuse'; -- committed as a plaintext literal."
+      },
+      {
+        "file": "app.js",
+        "line": 26,
+        "description": "res.json({ id: req.params.id, apiKeyUsed: RAKUTEN_API_SECRET }); -- the secret is echoed to the client."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "No authentication required to reach the endpoint that leaks the secret."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Any client calls the public endpoint and reads the secret straight out of the JSON response; anyone with read access to the repository (or its history) can also read it directly from source.",
+      "payloads": [
+        "GET /api/products/1/rakuten-link"
+      ],
+      "instructions": [
+        "Send a GET request to /api/products/1/rakuten-link with no authentication.",
+        "Observe that the response body contains the full value of apiKeyUsed."
+      ],
+      "observed_result": "The response JSON includes the live secret value, and the same value is visible in plaintext in the repository source."
+    },
+    "remediation": {
+      "strategy": "Move the secret to an environment variable (or a secret manager) loaded at runtime, remove it from source and git history, rotate the exposed key immediately, and stop returning it in any API response.",
+      "code_changes": [
+        {
+          "file_name": "app.js",
+          "fixed_code": "const RAKUTEN_API_SECRET = process.env.RAKUTEN_API_SECRET;\n// ...and never include RAKUTEN_API_SECRET in a res.json(...) response."
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "The leaking endpoint is unauthenticated and the secret is also plainly visible in source/repository history."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "A leaked live API key can be used by an attacker to impersonate the application against the third-party (Rakuten) API, potentially incurring cost or manipulating data under this account."
+      },
+      "overall_severity": "high"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "The secret literal and its exposure point are both directly visible in a few lines of source with no ambiguity."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "fingerprint": "app.js:searchEndpoint:sql-injection",
+    "title": "SQL injection in /api/products/search via unsanitized 'q' parameter",
+    "description": "The product search endpoint builds a SQL query by directly concatenating the raw 'q' query-string parameter into a LIKE clause. Any client can inject arbitrary SQL, allowing data exfiltration (e.g. dumping unrelated tables) or database corruption.",
+    "root_cause": "User-controlled input is interpolated into a SQL string with template literals instead of being passed as a bound parameter to sqlite3's parameterized query API.",
+    "intended_behavior": "The endpoint should return products whose name contains the search keyword, using a parameterized query so the keyword is always treated as data, never as SQL syntax.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "app.js",
+        "line": 15,
+        "scope": "app.get('/api/products/search')",
+        "description": "req.query.q is read directly from the unauthenticated HTTP request with no validation or type check."
+      },
+      {
+        "kind": "propagation",
+        "file": "app.js",
+        "line": 18,
+        "scope": "sql template literal",
+        "description": "keyword is interpolated into the SQL string with a template literal, no escaping or parameter binding."
+      },
+      {
+        "kind": "sink",
+        "file": "app.js",
+        "line": 20,
+        "scope": "db.all(sql, [])",
+        "description": "The unsanitized SQL string is executed directly against the sqlite3 database."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "app.js",
+        "line": 18,
+        "description": "const sql = `SELECT id, name, price FROM products WHERE name LIKE '%${keyword}%'`; -- keyword is attacker-controlled and unescaped."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "No authentication required; the endpoint is publicly reachable."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "An anonymous client sends a crafted 'q' value that breaks out of the LIKE string and appends additional SQL.",
+      "payloads": [
+        "GET /api/products/search?q=x%25' UNION SELECT username, password, 1 FROM users -- "
+      ],
+      "instructions": [
+        "Send the payload above as the 'q' query parameter to /api/products/search.",
+        "Observe that the response includes rows from an unrelated table (e.g. 'users'), confirming the injected UNION SELECT executed."
+      ],
+      "observed_result": "The LIKE clause is broken out of and an attacker-supplied SELECT is appended and executed by the database driver, as shown by the string concatenation at the sink with no parameter binding."
+    },
+    "remediation": {
+      "strategy": "Use sqlite3's parameterized query placeholders so user input is always bound as data, never concatenated into SQL text.",
+      "code_changes": [
+        {
+          "file_name": "app.js",
+          "fixed_code": "const sql = 'SELECT id, name, price FROM products WHERE name LIKE ?';\ndb.all(sql, [`%${keyword}%`], (err, rows) => { ... });"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "The endpoint is unauthenticated and publicly reachable, and the injection point requires no special conditions to trigger."
+      },
+      "impact": {
+        "score": "critical",
+        "reason": "Successful exploitation allows reading or corrupting arbitrary data in the database, including tables unrelated to products (e.g. user credentials)."
+      },
+      "overall_severity": "critical"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "The vulnerable data flow from request parameter to raw SQL execution is fully visible in a single file with no intervening sanitization."
+    }
+  }
+]
