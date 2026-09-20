@@ -65,8 +65,12 @@ echo "対象リポジトリ: $TARGET_DIR"
 echo "出力先        : $OUTPUT_DIR"
 
 # --- 2. security-audit-skill をインストール（未導入なら） -------------------
+# --agent claude-code を明示しないと、環境によっては別の検出済みエージェント
+# （例: OpenClaw）向けにインストールされてしまい、claude -p から認識されない。
 run npx --yes skills add https://github.com/cloudflare/security-audit-skill \
-  --skill security-audit
+  --skill security-audit \
+  --agent claude-code \
+  -y
 
 # --- 3. Claude Code をヘッドレス実行して監査 -> findings.json 生成 ----------
 FINDINGS_JSON="$OUTPUT_DIR/findings.json"
