@@ -60,10 +60,30 @@ python3 translate_findings_llm.py demo/findings.json > demo/output/report_ja_llm
 - `report_ja_template_only.md` — 見出しと重要度ラベルだけを日本語化した v1（本文は英語のまま）
 - `report_ja_llm.md` — 本文までClaude APIで書き直した v2（本命）
 
+## 自動パイプライン（`run_pipeline.sh`）
+
+対象リポジトリに対して `security-audit-skill` をClaude Code経由で実行し、
+`findings.json` の生成 → （あれば）スキーマ検証 → `translate_findings_llm.py` による
+日本語レポート化まで一気に行うスクリプトです。
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-xxxx
+./run_pipeline.sh /path/to/target-repo          # ローカルリポジトリを監査
+./run_pipeline.sh https://github.com/xxx/yyy    # リモートリポジトリをcloneして監査
+./run_pipeline.sh --dry-run ./demo              # 実行内容だけ確認（何も実行しない）
+```
+
+前提: Node.js（`npx`用）、認証済みの `claude` CLI、`ANTHROPIC_API_KEY` が必要です。
+
+**既知の制約**：`claude -p ...` によるヘッドレス監査実行は、入れ子で別のClaude Codeセッションを
+起動する形になります。Claude Code on the web / cloud のセッション内からこのスクリプトを実行すると、
+ハーネスのポリシーで「Create Unsafe Agents」として拒否されることがあります。その場合はローカル環境や
+CIジョブなど、ネストしたエージェント起動が許可される場所で実行してください。
+
 ## 現状の制約・次にやること
 
-- [ ] 実際の `ANTHROPIC_API_KEY` で `report_ja_llm.md` を再生成し、本物のAPI応答で検証する
-- [ ] `security-audit-skill` 本体をClaude Code経由で実リポジトリに対して実行し、`findings.json` を自動生成するパイプラインを組む
+- [x] 実際の `ANTHROPIC_API_KEY` で `report_ja_llm.md` を再生成し、本物のAPI応答で検証する
+- [x] `security-audit-skill` 本体をClaude Code経由で実リポジトリに対して実行し、`findings.json` を自動生成するパイプラインを組む（`run_pipeline.sh`。ネストしたエージェント起動が可能な環境での実運用検証はまだ）
 - [ ] Webフロント（GitHub連携・監査履歴・課金）を追加してSaaS化する
 - [ ] `needs_validation` / `rejected` 判定の扱いをレポートに追加する
 
